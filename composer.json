@@ -1,0 +1,25 @@
+{
+    "name": "initorm/database",
+    "description": "InitORM Database Manager",
+    "keywords": ["php", "php8", "pdo", "database", "crud", "query builder", "mysql", "postgresql", "sqlite"],
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "InitORM\\Database\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Muhammet ŞAFAK",
+            "email": "info@muhammetsafak.com.tr"
+        }
+    ],
+    "minimum-stability": "stable",
+    "require": {
+        "php": ">=7.4",
+        "ext-pdo": "*",
+        "initorm/dbal": "^1.0",
+        "initorm/query-builder": "^1.0"
+    }
+}
