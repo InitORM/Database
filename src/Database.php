@@ -48,7 +48,7 @@ class Database implements DatabaseInterface
 
         $this->queryBuilderFactory = new QueryBuilderFactory();
 
-        $this->builder = $this->queryBuilderFactory->createQueryBuilder();
+        $this->builder = $this->queryBuilderFactory->createQueryBuilder($this->connection->getDriver());
     }
 
     /**
@@ -95,7 +95,7 @@ class Database implements DatabaseInterface
     public function builder(): DatabaseInterface
     {
         $db = clone $this;
-        $db->builder = $this->queryBuilderFactory->createQueryBuilder();
+        $db->builder = $this->queryBuilderFactory->createQueryBuilder($this->connection->getDriver());
 
         return $db;
     }
