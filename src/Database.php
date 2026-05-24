@@ -1,32 +1,44 @@
 <?php
+
 /**
- * InitORM Database
- *
- * This file is part of InitORM Database.
- *
- * @author      Muhammet ŞAFAK <info@muhammetsafak.com.tr>
- * @copyright   Copyright © 2023 Muhammet ŞAFAK
- * @license     ./LICENSE  MIT
- * @version     1.0
- * @link        https://www.muhammetsafak.com.tr
+ * @package InitORM\Database
+ * @license MIT
  */
 
 declare(strict_types=1);
+
 namespace InitORM\Database;
 
-use PDO;
 use Closure;
-use Throwable;
+use InitORM\Database\Exceptions\DatabaseException;
+use InitORM\Database\Exceptions\DatabaseInvalidArgumentException;
+use InitORM\Database\Interfaces\DatabaseInterface;
 use InitORM\DBAL\Connection\Connection;
 use InitORM\DBAL\Connection\Interfaces\ConnectionInterface;
-use InitORM\Database\Interfaces\DatabaseInterface;
 use InitORM\DBAL\DataMapper\Interfaces\DataMapperInterface;
-use \InitORM\Database\Exceptions\{DatabaseException, DatabaseInvalidArgumentException};
-use \InitORM\QueryBuilder\{QueryBuilderFactory, QueryBuilderFactoryInterface, QueryBuilderInterface};
+use InitORM\QueryBuilder\QueryBuilderFactory;
+use InitORM\QueryBuilder\QueryBuilderFactoryInterface;
+use InitORM\QueryBuilder\QueryBuilderInterface;
+use PDO;
+use Throwable;
 
+use function method_exists;
+use function sprintf;
+
+/**
+ * Glues a {@see ConnectionInterface} (from initorm/dbal) to a
+ * {@see QueryBuilderInterface} (from initorm/query-builder), exposing a CRUD
+ * surface plus transactions and query-log proxying.
+ *
+ * Unknown method calls are forwarded to the inner query builder via
+ * {@see self::__call()}; when the builder returns itself (chainable methods)
+ * the call is re-wrapped to return this Database so fluent chains span the
+ * wrapper boundary.
+ *
+ * @mixin QueryBuilderInterface
+ */
 class Database implements DatabaseInterface
 {
-
     private ConnectionInterface $connection;
 
     private QueryBuilderInterface $builder;
@@ -34,260 +46,352 @@ class Database implements DatabaseInterface
     private QueryBuilderFactoryInterface $queryBuilderFactory;
 
     /**
-     * @inheritDoc
+     * Last DataMapper produced by an internal CRUD call, used by
+     * {@see self::affectedRows()}.
      */
-    public function __construct($connection)
-    {
+    private ?DataMapperInterface $lastResult = null;
+
+    /**
+     * @param array<string, mixed>|ConnectionInterface $connection          Either an
+     *        already-built connection or a credentials array suitable for
+     *        {@see Connection::__construct()}. PHP's native TypeError fires if
+     *        a value of any other type is passed in.
+     * @param QueryBuilderFactoryInterface|null        $queryBuilderFactory Injection
+     *        hook for tests / DI containers. Defaults to {@see QueryBuilderFactory}.
+     */
+    public function __construct(
+        array|ConnectionInterface $connection,
+        ?QueryBuilderFactoryInterface $queryBuilderFactory = null
+    ) {
         if ($connection instanceof ConnectionInterface) {
             $this->connection = $connection;
-        } else if (is_array($connection)) {
-            $this->connection = new Connection($connection);
         } else {
-            throw new DatabaseInvalidArgumentException();
+            $this->connection = new Connection($connection);
         }
 
-        $this->queryBuilderFactory = new QueryBuilderFactory();
-
-        $this->builder = $this->queryBuilderFactory->createQueryBuilder($this->connection->getDriver());
+        $this->queryBuilderFactory = $queryBuilderFactory ?? new QueryBuilderFactory();
+        $this->builder             = $this->queryBuilderFactory->createQueryBuilder($this->connection->getDriver());
     }
 
     /**
-     * @param $name
-     * @param $arguments
-     * @return mixed
-     * @throws DatabaseException
+     * Deep-clone the inner builder so spinning off a Database via {@see self::builder()}
+     * leaves the original builder state untouched.
      */
-    public function __call($name, $arguments)
+    public function __clone(): void
     {
-        if (method_exists($this->builder, $name)) {
-            $res = $this->builder->{$name}(...$arguments);
-
-            return ($res instanceof QueryBuilderInterface) ? $this : $res;
-        }
-
-        throw new DatabaseException();
+        $this->builder = clone $this->builder;
     }
 
     /**
-     * @inheritDoc
+     * Forward unknown calls to the inner query builder. When the builder
+     * returns itself (chainable methods), the call is re-wrapped to return
+     * this Database so fluent chains continue across the wrapper boundary.
+     *
+     * @param array<int, mixed> $arguments
+     *
+     * @throws DatabaseException When the method does not exist on the builder.
      */
+    public function __call(string $name, array $arguments): mixed
+    {
+        if (!method_exists($this->builder, $name)) {
+            throw new DatabaseException(sprintf(
+                'Method "%s::%s" does not exist.',
+                QueryBuilderInterface::class,
+                $name
+            ));
+        }
+
+        $result = $this->builder->{$name}(...$arguments);
+
+        return $result instanceof QueryBuilderInterface ? $this : $result;
+    }
+
     public function getConnection(): ConnectionInterface
     {
         return $this->connection;
     }
 
-    /**
-     * @inheritDoc
-     */
     public function getPDO(): PDO
     {
-        return $this->getConnection()->getPDO();
+        return $this->connection->getPDO();
     }
 
-    /**
-     * @inheritDoc
-     */
     public function query(string $sqlQuery, ?array $parameters = null, ?array $options = null): DataMapperInterface
     {
-        return $this->getConnection()->query($sqlQuery, $parameters, $options);
+        return $this->connection->query($sqlQuery, $parameters, $options);
     }
 
+    /**
+     * Spawn a sibling Database that shares this connection but carries a
+     * fresh builder — useful for composing independent queries off the same
+     * live connection (e.g. a sub-query under a parent query).
+     */
+    public function withFreshBuilder(): DatabaseInterface
+    {
+        $clone          = clone $this;
+        $clone->builder = $this->queryBuilderFactory->createQueryBuilder($this->connection->getDriver());
+
+        return $clone;
+    }
+
+    /**
+     * @deprecated since 3.0 — use {@see self::withFreshBuilder()} instead. Kept
+     *             as a thin alias for the duration of the v3 line.
+     */
     public function builder(): DatabaseInterface
     {
-        $db = clone $this;
-        $db->builder = $this->queryBuilderFactory->createQueryBuilder($this->connection->getDriver());
-
-        return $db;
+        return $this->withFreshBuilder();
     }
 
-    /**
-     * @inheritDoc
-     */
     public function create(?string $table = null, ?array $set = null): bool
     {
-        !empty($table) && $this->builder->from($table);
-        !empty($set) && $this->builder->set($set);
+        if (!empty($table)) {
+            $this->builder->from($table);
+        }
+        if (!empty($set)) {
+            $this->builder->set($set);
+        }
 
-        $res = $this->query($this->builder->generateInsertQuery(), $this->builder->getParameter()->all());
+        $this->executeBuilderQuery($this->builder->generateInsertQuery());
 
-        $this->builder->getParameter()->reset();
-
-        return $res->numRows() > 0;
+        return true;
     }
 
-    /**
-     * @inheritDoc
-     */
     public function createBatch(?string $table = null, ?array $set = null): bool
     {
-        !empty($table) && $this->builder->from($table);
+        if (!empty($table)) {
+            $this->builder->from($table);
+        }
         if (!empty($set)) {
             foreach ($set as $row) {
                 $this->builder->set($row);
             }
         }
 
-        $res = $this->query($this->builder->generateBatchInsertQuery(), $this->builder->getParameter()->all());
+        $this->executeBuilderQuery($this->builder->generateBatchInsertQuery());
 
-        $this->builder->getParameter()->reset();
-
-        return $res->numRows() > 0;
+        return true;
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function read(?string $table = null, ?array $selectors = null, ?array $conditions = null): DataMapperInterface
-    {
-        !empty($table) && $this->builder->from($table);
+    public function read(
+        ?string $table = null,
+        ?array $selectors = null,
+        ?array $conditions = null
+    ): DataMapperInterface {
+        if (!empty($table)) {
+            $this->builder->from($table);
+        }
 
-        $arguments = $this->builder->getParameter()->all();
-        $this->builder->getParameter()->reset();
+        // generateSelectQuery($selectors, $conditions) registers parameters
+        // via where(); the snapshot MUST be taken AFTER compile, not before.
+        $sql        = $this->builder->generateSelectQuery($selectors ?? [], $conditions ?? []);
+        $parameters = $this->builder->getParameter()->all();
 
-        return $this->query($this->builder->generateSelectQuery($selectors ?? [], $conditions ?? []), $arguments);
+        try {
+            $this->lastResult = $this->connection->query($sql, $parameters);
+        } finally {
+            $this->builder->resetStructure();
+            $this->builder->getParameter()->reset();
+        }
+
+        return $this->lastResult;
     }
 
-    /**
-     * @inheritDoc
-     */
     public function update(?string $table = null, ?array $set = null, ?array $conditions = null): bool
     {
-        !empty($table) && $this->builder->from($table);
-        !empty($set) && $this->builder->set($set);
-
-        if (!empty($conditions)) {
-            foreach ($conditions as $column => $value) {
-                if (is_string($column)) {
-                    $this->builder->where($column, $value);
-                } else {
-                    $this->builder->where($value);
-                }
-            }
+        if (!empty($table)) {
+            $this->builder->from($table);
+        }
+        if (!empty($set)) {
+            $this->builder->set($set);
         }
 
-        $res = $this->query($this->builder->generateUpdateQuery(), $this->builder->getParameter()->all());
+        $this->applyConditions($conditions);
 
-        $this->builder->getParameter()->reset();
+        $this->executeBuilderQuery($this->builder->generateUpdateQuery());
 
-        return $res->numRows() > 0;
+        return true;
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function updateBatch(string $referenceColumn, ?string $table = null, ?array $set = null, ?array $conditions = null): bool
-    {
-        !empty($table) && $this->builder->from($table);
+    public function updateBatch(
+        string $referenceColumn,
+        ?string $table = null,
+        ?array $set = null,
+        ?array $conditions = null
+    ): bool {
+        if (!empty($table)) {
+            $this->builder->from($table);
+        }
         if (!empty($set)) {
             foreach ($set as $row) {
                 $this->builder->set($row);
             }
         }
-        if (!empty($conditions)) {
-            foreach ($conditions as $column => $value) {
-                if (is_string($column)) {
-                    $this->builder->where($column, $value);
-                } else {
-                    $this->builder->where($value);
-                }
-            }
-        }
 
-        $res = $this->query($this->builder->generateUpdateBatchQuery($referenceColumn), $this->builder->getParameter()->all());
+        $this->applyConditions($conditions);
 
-        $this->builder->getParameter()->reset();
+        $this->executeBuilderQuery($this->builder->generateUpdateBatchQuery($referenceColumn));
 
-        return $res->numRows() > 0;
+        return true;
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function delete(?string $table, ?array $conditions = null): bool
+    public function delete(?string $table = null, ?array $conditions = null): bool
     {
-        !empty($table) && $this->builder->from($table);
-
-        if (!empty($conditions)) {
-            foreach ($conditions as $column => $value) {
-                if (is_string($column)) {
-                    $this->builder->where($column, $value);
-                } else {
-                    $this->builder->where($value);
-                }
-            }
+        if (!empty($table)) {
+            $this->builder->from($table);
         }
 
-        $res = $this->query($this->builder->generateDeleteQuery(), $this->builder->getParameter()->all());
+        $this->applyConditions($conditions);
 
-        $this->builder->getParameter()->reset();
+        $this->executeBuilderQuery($this->builder->generateDeleteQuery());
 
-        return $res->numRows() > 0;
+        return true;
     }
 
     /**
-     * @inheritDoc
+     * @throws DatabaseException When a transaction is already open, or when all
+     *         retry attempts fail. The original {@see Throwable} is preserved
+     *         as the previous-exception chain.
      */
     public function transaction(Closure $closure, int $attempt = 1, bool $testMode = false): bool
     {
         if ($attempt < 1) {
-            throw new DatabaseInvalidArgumentException("The number of transaction attempts cannot be less than 1.");
+            throw new DatabaseInvalidArgumentException('The number of transaction attempts cannot be less than 1.');
         }
-        if ($this->getConnection()->getPDO()->inTransaction()) {
-            throw new DatabaseException("Without ending one transaction, another cannot be started.");
+
+        $pdo = $this->connection->getPDO();
+        if ($pdo->inTransaction()) {
+            throw new DatabaseException('Cannot start a transaction while another is already in progress.');
         }
-        $res = false;
+
+        $lastError = null;
         for ($i = 0; $i < $attempt; ++$i) {
             try {
-                $this->getConnection()->getPDO()->beginTransaction();
-                call_user_func_array($closure, [$this]);
-                $res = $testMode
-                    ? $this->getConnection()->getPDO()->rollBack()
-                    : $this->getConnection()->getPDO()->commit();
-                if ($res) {
-                    break;
+                $pdo->beginTransaction();
+                $closure($this);
+
+                $committed = $testMode ? $pdo->rollBack() : $pdo->commit();
+
+                if ($committed) {
+                    return true;
                 }
             } catch (Throwable $e) {
-                $res = $this->getConnection()->getPDO()->rollBack();
-                continue;
+                $lastError = $e;
+                // beginTransaction()/commit() can throw mid-flight; we may or
+                // may not still be in a transaction at this point. Guard the
+                // rollback to avoid PDO's "no active transaction" error.
+                // @phpstan-ignore-next-line booleanNot.exprNotBoolean
+                if ($pdo->inTransaction() === true) {
+                    try {
+                        $pdo->rollBack();
+                    } catch (Throwable $rollbackError) {
+                        // The original error is what users care about; surface
+                        // a rollback failure only as part of the message.
+                        $lastError = new DatabaseException(
+                            sprintf(
+                                'Rollback failed after a failed transaction attempt: %s (original: %s)',
+                                $rollbackError->getMessage(),
+                                $e->getMessage()
+                            ),
+                            (int) $e->getCode(),
+                            $e
+                        );
+                    }
+                }
             }
         }
-        return $res;
+
+        throw new DatabaseException(
+            sprintf('Transaction failed after %d attempt(s): %s', $attempt, $lastError?->getMessage() ?? 'unknown'),
+            $lastError !== null ? (int) $lastError->getCode() : 0,
+            $lastError
+        );
     }
 
     /**
-     * @inheritDoc
+     * Forward to {@see \PDO::lastInsertId()}.
+     *
+     * @return string|false False when the driver does not provide one (or no
+     *         row has been inserted on this connection yet).
      */
-    public function insertId()
+    public function insertId(): string|false
     {
-        return $this->getPDO()->lastInsertId();
+        return $this->connection->getPDO()->lastInsertId();
     }
 
     /**
-     * @inheritDoc
+     * Number of rows affected by the most recent CRUD call on this Database
+     * instance (create / createBatch / update / updateBatch / delete / read).
+     * Returns 0 when no CRUD call has executed yet.
+     *
+     * Driver caveat: {@see \PDOStatement::rowCount()} is unreliable for SELECT
+     * on drivers that don't buffer results (e.g. unbuffered MySQL, SQLite for
+     * SELECT). For INSERT/UPDATE/DELETE on common drivers it returns the
+     * affected-row count, which is the intended use here.
      */
-    public function enableQueryLog(): self
+    public function affectedRows(): int
     {
-        $this->getConnection()->setQueryLogs(true);
+        return $this->lastResult?->numRows() ?? 0;
+    }
+
+    public function enableQueryLog(): static
+    {
+        $this->connection->setQueryLogs(true);
 
         return $this;
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function disableQueryLog(): self
+    public function disableQueryLog(): static
     {
-        $this->getConnection()->setQueryLogs(false);
+        $this->connection->setQueryLogs(false);
 
         return $this;
     }
 
-    /**
-     * @inheritDoc
-     */
     public function getQueryLogs(): array
     {
-        return $this->getConnection()->getQueryLogs();
+        return $this->connection->getQueryLogs();
     }
 
+    /**
+     * Compile-and-execute a SQL string produced by the builder, then reset the
+     * builder's parameter bag so a follow-up CRUD call starts clean.
+     */
+    private function executeBuilderQuery(string $sql): DataMapperInterface
+    {
+        $parameters = $this->builder->getParameter()->all();
+
+        try {
+            $this->lastResult = $this->connection->query($sql, $parameters);
+        } finally {
+            // Wipe builder state so the next CRUD call starts with a clean
+            // structure (no leftover where/from/select/set buckets).
+            $this->builder->resetStructure();
+            $this->builder->getParameter()->reset();
+        }
+
+        return $this->lastResult;
+    }
+
+    /**
+     * Translate the CRUD-helper $conditions shape into builder where() calls.
+     *
+     * - String keys → where(key, '=', value)
+     * - Integer keys → where(value) (caller-supplied RawQuery or column name)
+     *
+     * @param array<int|string, mixed>|null $conditions
+     */
+    private function applyConditions(?array $conditions): void
+    {
+        if (empty($conditions)) {
+            return;
+        }
+        foreach ($conditions as $column => $value) {
+            if (is_string($column)) {
+                $this->builder->where($column, '=', $value);
+            } else {
+                $this->builder->where($value);
+            }
+        }
+    }
 }

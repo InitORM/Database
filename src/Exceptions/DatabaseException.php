@@ -1,21 +1,21 @@
 <?php
+
 /**
- * InitORM Database
- *
- * This file is part of InitORM Database.
- *
- * @author      Muhammet ŞAFAK <info@muhammetsafak.com.tr>
- * @copyright   Copyright © 2023 Muhammet ŞAFAK
- * @license     ./LICENSE  MIT
- * @version     1.0
- * @link        https://www.muhammetsafak.com.tr
+ * @package InitORM\Database
+ * @license MIT
  */
 
 declare(strict_types=1);
+
 namespace InitORM\Database\Exceptions;
 
 use Exception;
 
+/**
+ * Base exception for runtime errors inside the InitORM Database layer
+ * (transaction lifecycle issues, missing facade state, missing builder
+ * methods, …). Catch this to catch every Database-specific error in one go.
+ */
 class DatabaseException extends Exception
 {
 }

@@ -1,412 +1,362 @@
 # InitORM Database
 
-Manage your database with or without abstraction. This library is built on the PHP PDO plugin and is mainly used to build and execute SQL queries.
+Composes [`initorm/dbal`](https://github.com/InitORM/DBAL) (PDO connection + result mapper) and [`initorm/query-builder`](https://github.com/InitORM/QueryBuilder) (fluent SQL builder) into a single Database manager with CRUD helpers, transactions, query logging, and an optional static facade.
 
-[![Latest Stable Version](http://poser.pugx.org/initorm/database/v)](https://packagist.org/packages/initorm/database) [![Total Downloads](http://poser.pugx.org/initorm/database/downloads)](https://packagist.org/packages/initorm/database) [![Latest Unstable Version](http://poser.pugx.org/initorm/database/v/unstable)](https://packagist.org/packages/initorm/database) [![License](http://poser.pugx.org/initorm/database/license)](https://packagist.org/packages/initorm/database) [![PHP Version Require](http://poser.pugx.org/initorm/database/require/php)](https://packagist.org/packages/initorm/database)
+[![Latest Stable Version](http://poser.pugx.org/initorm/database/v)](https://packagist.org/packages/initorm/database)
+[![Total Downloads](http://poser.pugx.org/initorm/database/downloads)](https://packagist.org/packages/initorm/database)
+[![License](http://poser.pugx.org/initorm/database/license)](https://packagist.org/packages/initorm/database)
+[![PHP Version Require](http://poser.pugx.org/initorm/database/require/php)](https://packagist.org/packages/initorm/database)
+[![PHPUnit](https://github.com/InitORM/Database/actions/workflows/phpunit.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpunit.yml)
+[![PHPStan](https://github.com/InitORM/Database/actions/workflows/phpstan.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpstan.yml)
+[![PHP_CodeSniffer](https://github.com/InitORM/Database/actions/workflows/phpcs.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpcs.yml)
+
+---
 
 ## Requirements
 
-- PHP 8.0 and later.
-- PHP PDO extension.
+- **PHP 8.1 or later**
+- `ext-pdo`
+- One of `ext-pdo_mysql`, `ext-pdo_pgsql`, or `ext-pdo_sqlite` depending on the database you target.
 
-## Supported Databases
+## Supported databases
 
-This library should work correctly in almost any database that uses basic SQL syntax.
-Databases supported by PDO and suitable drivers are available at [https://www.php.net/manual/en/pdo.drivers.php](https://www.php.net/manual/en/pdo.drivers.php).
+Any database with a PDO driver that follows standard SQL works out of the box. The query builder ships dialect-aware identifier quoting for **MySQL/MariaDB**, **PostgreSQL**, and **SQLite**; for everything else (`oci`, `sqlsrv`, …) it falls back to a generic, no-escaping driver.
 
 ## Installation
 
-```
+```bash
 composer require initorm/database
 ```
 
-## Usage
+---
 
-### QueryBuilder & DBAL and CRUD
+## Quick start
 
 ```php
-require_once "vendor/autoload.php";
-use \InitORM\Database\Facade\DB;
+<?php
+require_once 'vendor/autoload.php';
 
-// Connection
+use InitORM\Database\Facade\DB;
+
 DB::createImmutable([
-    'dsn'       => 'mysql:host=localhost;port=3306;dbname=test;charset=utf8mb4',
-    'username'  => 'root',
-    'password'  => '',
+    'dsn'       => 'mysql:host=localhost;port=3306;dbname=app;charset=utf8mb4',
+    'username'  => 'app',
+    'password'  => 'secret',
     'charset'   => 'utf8mb4',
-    'collation' => 'utf8mb4_general_ci',
+    'collation' => 'utf8mb4_unicode_ci',
+]);
+
+// CRUD shortcut
+DB::create('users', ['name' => 'Alice', 'email' => 'alice@example.com']);
+
+// Fluent builder + CRUD
+$rows = DB::select('id', 'name')
+    ->where('active', '=', 1)
+    ->orderBy('id', 'DESC')
+    ->limit(10)
+    ->read('users')
+    ->asAssoc()
+    ->rows();
+```
+
+> `createImmutable()` sets the application-wide facade once. Calling it a second time throws — see [`docs/10-facade-vs-instance.md`](docs/10-facade-vs-instance.md) for swap and multi-connection patterns.
+
+---
+
+## Configuration reference
+
+All keys are passed through to the underlying [`InitORM\DBAL\Connection\Connection`](https://github.com/InitORM/DBAL/blob/master/src/Connection/Connection.php) constructor. Defaults are sane for MySQL.
+
+| Key            | Type                                 | Default       | Notes                                                                                          |
+| -------------- | ------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------- |
+| `dsn`          | `string`                             | _(built)_     | When empty, a DSN is constructed from `driver`, `host`, `port`, `database`, `charset`.         |
+| `driver`       | `string`                             | `'mysql'`     | `mysql`, `pgsql`/`postgres`/`postgresql`, `sqlite`, or any PDO driver name.                    |
+| `host`         | `string`                             | `'127.0.0.1'` | Ignored when `dsn` is set explicitly.                                                          |
+| `port`         | `int\|string`                        | `3306`        | Ignored when `dsn` is set explicitly.                                                          |
+| `database`     | `string`                             | `''`          | For SQLite use `':memory:'` or a file path.                                                    |
+| `username`     | `string\|null`                       | `null`        |                                                                                                |
+| `password`     | `string\|null`                       | `null`        |                                                                                                |
+| `charset`      | `string`                             | `'utf8mb4'`   | Applied on MySQL via `SET NAMES`. Pass `''` to skip (e.g. SQLite).                             |
+| `collation`    | `string\|null`                       | `null`        | MySQL-only. Validated against `[A-Za-z0-9_]` before interpolation.                             |
+| `options`      | `array<int, mixed>`                  | `[]`          | Merged on top of safe PDO defaults (exceptions on errors, FETCH_ASSOC, no emulation).          |
+| `queryOptions` | `array<int, mixed>`                  | `[]`          | PDO `prepare()` options used for every statement.                                              |
+| `log`          | `string\|callable\|object\|null`     | `null`        | See [Logger](#logger). File path, callable, or any object with a `critical(string)` method.    |
+| `debug`        | `bool`                               | `false`       | When true, query failure messages also include the bound parameters (JSON-encoded).            |
+| `queryLogs`    | `bool`                               | `false`       | Bootstrap value for the query log buffer (see [Query log](#query-log)).                        |
+
+---
+
+## CRUD
+
+All CRUD helpers reset the builder's state on completion, so the next call starts with a clean slate. Every helper returns `bool true` on successful execution and throws on failure — use [`affectedRows()`](#affected-rows) when you also need to know how many rows changed.
+
+### Create
+
+```php
+use InitORM\Database\Facade\DB;
+
+DB::create('posts', [
+    'title'   => 'Post Title',
+    'content' => 'Post Content',
+]);
+
+$newId = DB::insertId();
+```
+
+Generated SQL: `INSERT INTO posts (title, content) VALUES (:title, :content)`
+
+### Create batch
+
+```php
+DB::createBatch('posts', [
+    ['title' => 'Post #1', 'content' => 'Body 1', 'author_id' => 5],
+    ['title' => 'Post #2', 'content' => 'Body 2'],
 ]);
 ```
 
-#### Create
+Generated SQL: `INSERT INTO posts (title, content, author_id) VALUES (:title, :content, :author_id), (:title_1, :content_1, NULL)`
+
+Missing columns in any row compile to `NULL`.
+
+### Read
 
 ```php
-use \InitORM\Database\Facade\DB;
-$data = [
-    'title'     => 'Post Title',
-    'content'   => 'Post Content',
-];
-
-$isInsert = DB::create('post', $data);
-
-/**
-* This executes the following query.
-* 
-* INSERT INTO post 
-* (title, content) 
-* VALUES 
-* ("Post Title", "Post Content");
-*/
-if($isInsert){
-    // Success
-} else {
-    foreach (DB::getErrors() as $errMsg) {
-        echo $errMsg;
-    }
-}
-```
-
-##### Create Batch
-
-```php
-use \InitORM\Database\Facade\DB;
-
-$data = [
-    [
-        'title'     => 'Post Title 1',
-        'content'   => 'Post Content 1',
-        'author'    => 5
-    ],
-    [
-        'title'     => 'Post Title 2',
-        'content'   => 'Post Content 2'
-    ],
-];
-
-$isInsert = DB::createBatch('post', $data);
-
-/**
-* This executes the following query.
-* 
-* INSERT INTO post 
-* (title, content, author) 
-* VALUES 
-* ("Post Title 1", "Post Content 1", 5),
-* ("Post Title 2", "Post Content 2", NULL);
-*/
-
-if($isInsert){
-    // Success
-}
-```
-
-#### Read
-
-```php
-use \InitORM\Database\Facade\DB;
-
-
-/**
-* This executes the following query.
-* 
-* SELECT user.name AS author_name, post.id, post.title 
-* FROM post, user 
-* WHERE user.id = post.author AND post.status = 1
-* ORDER BY post ASC, post.created_at DESC
-* LIMIT 20, 10
-*/
-
-$res = DB::select('user.name as author_name', 'post.id', 'post.title')
+$res = DB::select('user.name AS author_name', 'post.id', 'post.title')
     ->from('post')
     ->selfJoin('user', 'user.id=post.author')
-    ->where('post.status', 1)
+    ->where('post.status', '=', 1)
     ->orderBy('post.id', 'ASC')
     ->orderBy('post.created_at', 'DESC')
-    ->offset(20)->limit(10)
+    ->offset(20)
+    ->limit(10)
     ->read();
-    
-if($res->numRows() > 0){
-    $results = $res->asAssoc()
-                    ->rows();
-    foreach ($results as $row) {
-        echo $row['title'] . ' by ' . $row['author_name'] . '<br />';
-    }
+
+foreach ($res->asAssoc()->rows() as $row) {
+    echo $row['title'] . ' by ' . $row['author_name'] . PHP_EOL;
 }
 ```
 
-#### Update
+### Update
 
 ```php
-use \InitORM\Database\Facade\DB;
-$data = [
-    'title'     => 'New Title',
-    'content'   => 'New Content',
-];
-
-$isUpdate = DB::where('id', 13)
-                ->update('post', $data);
-    
-/**
-* This executes the following query.
-* 
-* UPDATE post 
-* SET title = "New Title", content = "New Content"
-* WHERE id = 13
-*/
-if ($isUpdate) {
-    // Success
-}
+DB::update('post', ['title' => 'New Title', 'content' => 'New Content'], ['id' => 13]);
 ```
 
-##### Update Batch
+Generated SQL: `UPDATE post SET title = :title, content = :content WHERE id = :id`
+
+### Update batch
 
 ```php
-use \InitORM\Database\Facade\DB;
-$data = [
-    [
-        'id'        => 5,
-        'title'     => 'New Title #5',
-        'content'   => 'New Content #5',
-    ],
-    [
-        'id'        => 10,
-        'title'     => 'New Title #10',
-    ]
-];
-
-$isUpdate = DB::where('status', '!=', 0)
-                ->updateBatch('id', 'post', $data);
-    
-/**
-* This executes the following query.
-* 
-* UPDATE post SET 
-* 	title = CASE 
-* 		WHEN id = 5 THEN 'New Title #5' 
-* 		WHEN id = 10 THEN 'New Title #10' 
-* 		ELSE title END, 
-* 	content = CASE 
-* 		WHEN id = 5 THEN 'New Content #5'
-* 		ELSE content END 
-* WHERE status != 0 AND id IN (5, 10)
-*/
-if ($isUpdate) {
-    // Success
-}
+DB::where('status', '!=', 0)
+    ->updateBatch('id', 'post', [
+        ['id' => 5,  'title' => 'New Title #5',  'content' => 'New Content #5'],
+        ['id' => 10, 'title' => 'New Title #10'],
+    ]);
 ```
 
-#### Delete
+Generated SQL (formatted):
 
-```php
-use \InitORM\Database\Facade\DB;
-
-$isDelete = DB::where('id', 13)
-                ->delete('post');
-    
-/**
-* This executes the following query.
-* 
-* DELETE FROM post WHERE id = 13
-*/
-if ($isUpdate) {
-    // Success
-}
+```sql
+UPDATE post SET
+    title = CASE WHEN id = :id THEN :title WHEN id = :id_1 THEN :title_1 ELSE title END,
+    content = CASE WHEN id = :id_2 THEN :content ELSE content END
+WHERE status != :status AND id IN (:id_3, :id_4)
 ```
 
-### RAW
+### Delete
 
 ```php
-use \InitORM\Database\Facade\DB;
+DB::delete('post', ['id' => 13]);
+```
 
-$res = DB::query("SELECT id, title FROM post WHERE user_id = :id", [
-    ':id'   => 5
-]);
+Generated SQL: `DELETE FROM post WHERE id = :id`
+
+### Affected rows
+
+```php
+DB::update('users', ['active' => 0], ['active' => 1]);
+echo DB::affectedRows(); // e.g. 42
+```
+
+`affectedRows()` returns the row count of the most recent CRUD call on the same Database instance.
+
+---
+
+## Raw queries
+
+```php
+$res = DB::query(
+    'SELECT id, title FROM post WHERE user_id = :id',
+    [':id' => 5]
+);
 
 if ($res->numRows() > 0) {
-    $result = $res->asObject()
-                    ->row();
-    
+    $result = $res->asObject()->row();
     echo $result->title;
 }
 ```
 
-#### Builder for RAW
+You can also use `DB::raw()` inside the builder to inject literal SQL fragments — **never embed unsanitized user input**:
 
 ```php
-use \InitORM\Database\Facade\DB;
-
 $res = DB::select(DB::raw("CONCAT(name, ' ', surname) AS fullname"))
-        ->where(DB::raw("title = '' AND (status = 1 OR status = 0)"))
-        ->limit(5)
-        ->read('users');
-        
-/**
- * SELECT CONCAT(name, ' ', surname) AS fullname 
- * FROM users 
- * WHERE title = '' AND (status = 1 OR status = 0)
- * LIMIT 5
- */
-$results = $res->asAssoc()
-                ->rows();
-foreach ($results as $row) {
-    echo $row['fullname'];
+    ->where(DB::raw('status = 1 OR status = 0'))
+    ->limit(5)
+    ->read('users');
+```
+
+---
+
+## Transactions
+
+```php
+DB::transaction(function (\InitORM\Database\Interfaces\DatabaseInterface $db) {
+    $db->create('orders',     ['user_id' => 5, 'total' => 199.90]);
+    $db->create('order_items',['order_id' => $db->insertId(), 'sku' => 'X', 'qty' => 1]);
+});
+```
+
+- The closure receives the Database instance.
+- Throw to abort: the current transaction is rolled back; if `$attempt > 1` the closure is retried; otherwise the original error is rethrown wrapped in a `DatabaseException` (the original is reachable via `$e->getPrevious()`).
+- Pass `testMode: true` to roll back even on success — useful for integration tests.
+
+```php
+$caught = null;
+try {
+    DB::transaction(function ($db) {
+        $db->create('orders', [...]);
+        throw new \RuntimeException('boom');
+    });
+} catch (\InitORM\Database\Exceptions\DatabaseException $e) {
+    $caught = $e->getPrevious(); // \RuntimeException 'boom'
 }
 ```
 
-#### Working With A Different Connection
+---
 
-This library was developed with the thought that you would work with a single database and connection, but I know that in some projects you work with more than one connection and database.
+## Multiple connections
 
-If you want to work with a different non-global connection, use the `connect()` method.
+`DB::createImmutable()` registers a single shared facade. For secondary connections, use `DB::connect()` or instantiate `Database` directly — these do not touch the facade slot.
 
 ```php
-use \InitORM\Database\Facade\DB;
+use InitORM\Database\Database;
 
-DB::connect([
-    'dsn'       => 'mysql:host=localhost;port=3306;dbname=test;charset=utf8mb4',
-    'username'  => 'root',
-    'password'  => '',
-    'charset'   => 'utf8mb4',
-    'collation' => 'utf8mb4_general_ci',
+$reports = new Database([
+    'dsn'      => 'pgsql:host=reports.internal;dbname=reports',
+    'username' => 'reports_ro',
+    'password' => '…',
+    'driver'   => 'pgsql',
 ]);
+
+$reports->read('events')->asAssoc()->rows();
 ```
 
-## Development Tools
+If you must swap the immutable facade target (rare; mostly for tests), call `DB::replaceImmutable($next)` explicitly — silent overrides are forbidden.
 
-Below I have mentioned some developer tools that you can use during and after development.
+---
+
+## Developer tools
 
 ### Logger
 
-```php
-use \InitORM\Database\Facade\DB;
+The `log` credential accepts three shapes — a file path, a callable, or any object with a `critical(string)` method. The DBAL Logger writes a single string message per failed query, prefixed with the SQL and (when `debug` is on) the bound parameters.
 
+```php
+// 1) File path — file_put_contents() with append
 DB::createImmutable([
-    'dsn'       => 'mysql:host=localhost;dbname=test;port=3306;charset=utf8mb4;',
-    'username'  => 'root',
-    'password'  => '',
-    
-    'log'       => __DIR__ '/logs/db.log', // string, callable or object
+    'dsn'  => 'mysql:host=localhost;dbname=app;charset=utf8mb4',
+    'log'  => __DIR__ . '/var/log/db-{year}-{month}-{day}.log',
 ]);
-```
 
-If you define a file path as a String; Attempts are made to write into it with `file_put_contents()`.
-
-_Note :_ You can define variables such as `{year}`, `{month}`, `{day}` in the filename.
-
-- You can also define an object with the `critical` method. The database library will pass the log message to this method as a parameter. Or define it as callable array to use any method of the object.
-
-```php
-use \InitORM\Database\Facade\DB;
-
-class Logger {
-    
-    public function critical(string $msg)
-    {
-        $path = __DIR__ . '/log.log';
-        file_put_contents($path, $msg, FILE_APPEND);
-    }
-
-}
-
-$logger = new Logger();
-
+// 2) Callable
 DB::createImmutable([
-    'dsn'       => 'mysql:host=localhost;dbname=test;port=3306;charset=utf8mb4;',
-    'username'  => 'root',
-    'password'  => '',
-    
-    'log'       => $logger, // or [$logger, 'critical']
-]);
-```
-
-- Similarly it is possible to define it in a callable method.
-
-```php
-use \InitORM\Database\Facade\DB;
-
-DB::createImmutable([
-    'dsn'       => 'mysql:host=localhost;dbname=test;port=3306;charset=utf8mb4;',
-    'username'  => 'root',
-    'password'  => '',
-    
-    'log'       => function (string $msg) {
-        $path = __DIR__ . '/log.log';
-        file_put_contents($path, $msg, FILE_APPEND);
+    'dsn'  => 'mysql:host=localhost;dbname=app;charset=utf8mb4',
+    'log'  => function (string $msg): void {
+        error_log($msg);
     },
 ]);
-```
 
-### DeBug Mode
-
-Debug mode is used to include the executed SQL statement in the error message. *__It should only be activated in the development environment__*.
-
-```php
-use \InitORM\Database\Facade\DB;
+// 3) Object with critical() (or a [$obj, 'method'] callable)
+class Logger {
+    public function critical(string $msg): void { /* … */ }
+}
 
 DB::createImmutable([
-    'dsn'       => 'mysql:host=localhost;dbname=test;port=3306;charset=utf8mb4;',
-    'username'  => 'root',
-    'password'  => '',
-    
-    'debug'     => true, // boolean
+    'dsn'  => 'mysql:host=localhost;dbname=app;charset=utf8mb4',
+    'log'  => new Logger(),
 ]);
 ```
 
-### Profiler Mode
-
-Profiler mode is a developer tool available in v3 and above. It is a feature that allows you to see the executed queries along with their execution times.
+### Debug mode
 
 ```php
-use InitPHP\Database\Facade\DB;
-
-DB::enableQueryLog();
-
-DB::table('users')->where('name', 'John')->read();
-
-var_dump(DB::getQueryLogs());
-
-/**
- * The output of the above example looks like this;
- * [
- *      [
- *          'query' => 'SELECT * FROM users WHERE name = :name',
- *          'time'  => '0.00064',
- *          'args'  => [
- *              ':name'     => 'John',
- *          ]
- *      ]
- * ]
- * 
- */
+DB::createImmutable([
+    'dsn'   => 'mysql:host=localhost;dbname=app;charset=utf8mb4',
+    'debug' => true, // include bound parameters in failure messages
+]);
 ```
 
-## Getting Help
+> Enable in development only — bound parameter dumps can include credentials and PII.
 
-If you have questions, concerns, bug reports, etc, please file an issue in this repository's Issue Tracker.
+### Query log
 
-## Getting Involved
+```php
+DB::enableQueryLog();
+DB::read('users', ['id', 'name'], ['active' => 1]);
 
-> All contributions to this project will be published under the MIT License. By submitting a pull request or filing a bug, issue, or feature request, you are agreeing to comply with this waiver of copyright interest.
+var_dump(DB::getQueryLogs());
+/*
+[
+    [
+        'query' => 'SELECT id, name FROM users WHERE active = :active',
+        'args'  => [':active' => 1],
+        'timer' => 0.000642,
+    ],
+]
+*/
+```
 
-There are two primary ways to help:
+`enableQueryLog()` / `disableQueryLog()` return the Database instance for chaining; `getQueryLogs()` returns every recorded entry. The buffer lives on the Connection — calling `disableQueryLog()` stops recording but does not clear previously-collected entries.
 
-- Using the issue tracker, and
-- Changing the code-base.
+---
 
-### Using the issue tracker
+## Documentation
 
-Use the issue tracker to suggest feature requests, report bugs, and ask questions. This is also a great way to connect with the developers of the project as well as others who are interested in this solution.
+In-depth, code-first guides live under [`docs/`](docs/):
 
-Use the issue tracker to find ways to contribute. Find a bug or a feature, mention in the issue that you will take on that effort, then follow the Changing the code-base guidance below.
+- [`01-getting-started.md`](docs/01-getting-started.md)
+- [`02-configuration.md`](docs/02-configuration.md)
+- [`03-crud.md`](docs/03-crud.md)
+- [`04-query-builder.md`](docs/04-query-builder.md)
+- [`05-transactions.md`](docs/05-transactions.md)
+- [`06-raw-queries.md`](docs/06-raw-queries.md)
+- [`07-multiple-connections.md`](docs/07-multiple-connections.md)
+- [`08-logger-and-debug.md`](docs/08-logger-and-debug.md)
+- [`09-query-log-profiler.md`](docs/09-query-log-profiler.md)
+- [`10-facade-vs-instance.md`](docs/10-facade-vs-instance.md)
+- [`11-architecture.md`](docs/11-architecture.md)
+- [`12-upgrade-guide.md`](docs/12-upgrade-guide.md) — **migrating from v2 to v3**
 
-### Changing the code-base
+---
 
-Generally speaking, you should fork this repository, make changes in your own fork, and then submit a pull request. All new code should have associated unit tests that validate implemented features and the presence or lack of defects. Additionally, the code should follow any stylistic and architectural guidelines prescribed by the project. In the absence of such guidelines, mimic the styles and patterns in the existing code-base.
+## Contributing
+
+Contributions are welcome. The general flow is:
+
+1. Fork and branch off `master`.
+2. Add tests for the behaviour you change — see [`tests/`](tests/) for patterns (SQLite in-memory, fast and dependency-free).
+3. Run the full quality suite locally:
+   ```bash
+   composer qa   # phpcs + phpstan + phpunit
+   ```
+4. Open a PR — CI will run the same suite across PHP 8.1–8.4.
+
+By submitting a contribution you agree to license it under the MIT License.
 
 ## Credits
 
-- [Muhammet ŞAFAK](https://www.muhammetsafak.com.tr) <<info@muhammetsafak.com.tr>>
+- [Muhammet ŞAFAK](https://www.muhammetsafak.com.tr) — `<info@muhammetsafak.com.tr>`
 
 ## License
 
-Copyright &copy; 2023 [MIT License](./LICENSE)
+Released under the [MIT License](./LICENSE).
