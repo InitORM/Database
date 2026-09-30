@@ -10,6 +10,8 @@ Composes [`initorm/dbal`](https://github.com/InitORM/DBAL) (PDO connection + res
 [![PHPStan](https://github.com/InitORM/Database/actions/workflows/phpstan.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpstan.yml)
 [![PHP_CodeSniffer](https://github.com/InitORM/Database/actions/workflows/phpcs.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpcs.yml)
 
+[![Designed & Maintained with Tan](https://www.muhammetsafak.com.tr/badges/designed-maintained-with-tan.svg)](https://www.muhammetsafak.com.tr/en/tan/)
+
 ---
 
 ## Requirements
