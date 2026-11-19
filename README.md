@@ -10,7 +10,7 @@ Composes [`initorm/dbal`](https://github.com/InitORM/DBAL) (PDO connection + res
 [![PHPStan](https://github.com/InitORM/Database/actions/workflows/phpstan.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpstan.yml)
 [![PHP_CodeSniffer](https://github.com/InitORM/Database/actions/workflows/phpcs.yml/badge.svg)](https://github.com/InitORM/Database/actions/workflows/phpcs.yml)
 
-[![Designed & Maintained with Tan](https://www.muhammetsafak.com.tr/badges/designed-maintained-with-tan.svg)](https://www.muhammetsafak.com.tr/en/tan/)
+[![Designed & Maintained with Tan](https://muhammetsafak.com/badges/designed-maintained-with-tan.svg)](https://muhammetsafak.com/tan/)
 
 ---
 
@@ -357,7 +357,7 @@ By submitting a contribution you agree to license it under the MIT License.
 
 ## Credits
 
-- [Muhammet ŞAFAK](https://www.muhammetsafak.com.tr) — `<info@muhammetsafak.com.tr>`
+- [Muhammet ŞAFAK](https://muhammetsafak.com) — `<info@muhammetsafak.com>`
 
 ## License
 
